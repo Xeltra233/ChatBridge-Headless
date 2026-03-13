@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# 安装Chromium依赖
+# 安装Chromium依赖 + 中文字体
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libnss3 \
@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     fonts-liberation \
+    fonts-noto-cjk \
     wget \
     gnupg \
     && rm -rf /var/lib/apt/lists/*

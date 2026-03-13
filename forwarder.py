@@ -2,7 +2,7 @@
 ChatBridge Forwarder - 处理WebSocket和API转发
 
 架构：
-  NapCat → 用户API(8003) → 排队 → WebSocket(8001) → SillyTavern扩展 → SillyTavern自己调LLM
+  NapCat → 用户API(8003) → 排队 → HTTP长轮询 → SillyTavern扩展 → SillyTavern自己调LLM
 """
 
 import json
@@ -125,7 +125,22 @@ class ChatBridgeForwarder:
 
     async def start_user_api_server(self) -> web.AppRunner:
         """启动用户API服务器（NapCat调用此处，ST扩展也连此处）"""
-        app = web.Application()
+
+        @web.middleware
+        async def cors_middleware(request: web.Request, handler):
+            """为所有响应添加 CORS 头，允许浏览器扩展跨域请求"""
+            if request.method == "OPTIONS":
+                response = web.Response(status=204)
+            else:
+                response = await handler(request)
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = (
+                "Content-Type, X-Token, Authorization"
+            )
+            return response
+
+        app = web.Application(middlewares=[cors_middleware])
         app.router.add_post("/v1/chat/completions", self.handle_user_api)
         app.router.add_get("/v1/models", self.handle_models_stub)
         app.router.add_get("/models", self.handle_models_stub)
@@ -133,6 +148,8 @@ class ChatBridgeForwarder:
         app.router.add_get("/st/poll", self.handle_st_poll)
         app.router.add_post("/st/response", self.handle_st_response)
         app.router.add_post("/st/connect", self.handle_st_connect)
+        # OPTIONS 预检（CORS 预检请求）
+        app.router.add_route("OPTIONS", "/{path_info:.*}", self._handle_options)
 
         host = self.settings["user_api"]["host"]
         port = self.settings["user_api"]["port"]
@@ -144,6 +161,10 @@ class ChatBridgeForwarder:
 
         self.log(f"用户API服务器启动在 http://{host}:{port}")
         return runner
+
+    async def _handle_options(self, request: web.Request) -> web.Response:
+        """处理 CORS 预检请求"""
+        return web.Response(status=204)
 
     async def handle_models_stub(self, request: web.Request) -> web.Response:
         """返回一个固定的模型列表（占位）"""
@@ -170,12 +191,6 @@ class ChatBridgeForwarder:
             and request.headers.get("Authorization") != f"Bearer {expected_key}"
         ):
             return web.Response(status=401, text="无效的API密钥")
-
-        if not self.ws_clients:
-            self.log("没有WebSocket客户端连接", "warning")
-            return web.Response(
-                status=503, text="SillyTavern未连接，请检查扩展是否已连接"
-            )
 
         try:
             request_data = await request.json()

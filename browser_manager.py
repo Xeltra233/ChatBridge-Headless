@@ -533,7 +533,16 @@ class BrowserManager:
         await self.start()
 
     async def get_screenshot_base64(self) -> Optional[str]:
-        """获取截图Base64编码"""
+        """获取截图Base64编码，每次调用都实时截图"""
+        try:
+            if self.page and self.is_running:
+                screenshot = await self.page.screenshot(
+                    type="jpeg", quality=70, scale="device"
+                )
+                self.last_screenshot = screenshot
+        except Exception as e:
+            self.log(f"实时截图失败: {e}", "debug")
+
         if self.last_screenshot:
             return base64.b64encode(self.last_screenshot).decode("utf-8")
         return None

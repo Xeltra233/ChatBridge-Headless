@@ -33,8 +33,8 @@ RUN playwright install chromium
 # 复制源代码
 COPY . .
 
-# 创建cookies文件（如果不存在）
-RUN touch cookies.json
+# 创建数据持久化目录（Zeabur挂载 /app/data）
+RUN mkdir -p /app/data
 
 # 暴露端口
 EXPOSE 8080

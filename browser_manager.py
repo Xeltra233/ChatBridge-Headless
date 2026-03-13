@@ -40,10 +40,15 @@ class BrowserManager:
         self.basic_auth_pass = self.browser_config.get("basic_auth_pass", "")
         self.st_user = self.browser_config.get("st_user", "QQbot")
         self.st_pass = self.browser_config.get("st_pass", "")
-        self.cookie_file = self.browser_config.get("cookie_file", "cookies.json")
         self.st_url = self.browser_config.get(
             "st_url", "http://sillytavern-conel.zeabur.internal:8000"
         )
+
+        # cookies.json 统一放到 data/ 目录
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        os.makedirs(data_dir, exist_ok=True)
+        cookie_filename = self.browser_config.get("cookie_file", "cookies.json")
+        self.cookie_file = os.path.join(data_dir, os.path.basename(cookie_filename))
 
     def log(self, message: str, level: str = "info"):
         """记录日志并推送到管理UI"""

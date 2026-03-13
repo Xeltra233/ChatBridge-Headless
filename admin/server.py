@@ -225,11 +225,14 @@ class AdminServer:
         asyncio.create_task(self.browser_manager.restart())
         return web.json_response({"success": True, "message": "浏览器正在重启..."})
 
+    def _settings_path(self) -> str:
+        data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+        os.makedirs(data_dir, exist_ok=True)
+        return os.path.join(data_dir, "settings.json")
+
     async def handle_get_settings(self, request: web.Request) -> web.Response:
         """获取当前设置"""
-        settings_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "settings.json"
-        )
+        settings_path = self._settings_path()
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -241,9 +244,7 @@ class AdminServer:
 
     async def handle_save_settings(self, request: web.Request) -> web.Response:
         """保存设置"""
-        settings_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "settings.json"
-        )
+        settings_path = self._settings_path()
         try:
             data = await request.json()
             content = data.get("content", "")

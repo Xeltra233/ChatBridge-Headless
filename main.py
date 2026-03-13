@@ -23,9 +23,13 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+
+
 def load_settings() -> dict:
     """加载配置文件，仅管理UI密码从环境变量读取"""
-    settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    settings_path = os.path.join(DATA_DIR, "settings.json")
     template_path = os.path.join(os.path.dirname(__file__), "settings.json.template")
 
     # 如果settings.json不存在，从模板创建

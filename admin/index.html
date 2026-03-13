@@ -260,6 +260,11 @@
                             <div class="stat-label">最后错误</div>
                             <div class="stat-value" style="font-size:13px;color:#ff6b6b" id="stat-error">无</div>
                         </div>
+                        <div class="stat-item">
+                            <div class="stat-label">重试配置</div>
+                            <div class="stat-value" style="font-size:16px" id="stat-retry">-</div>
+                            <div class="stat-sub">最大次数 / 间隔 / 超时</div>
+                        </div>
                     </div>
                 </div>
                 <div class="card">
@@ -378,6 +383,8 @@
                 }
                 const err = browser.last_error;
                 document.getElementById('stat-error').textContent = err ? err.substring(0, 40) + '...' : '无';
+                document.getElementById('stat-retry').textContent =
+                    `${forwarder.max_retries || 3}次 / ${forwarder.retry_delay || 5}s / ${forwarder.timeout || 120}s`;
 
             } catch (e) {}
         }

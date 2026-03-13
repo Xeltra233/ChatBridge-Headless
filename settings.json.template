@@ -9,6 +9,11 @@
         "port": 8003,
         "api_key": ""
     },
+    "retry": {
+        "max_retries": 3,
+        "retry_delay": 5,
+        "timeout": 120
+    },
     "browser": {
         "st_url": "http://sillytavern-conel.zeabur.internal:8000",
         "basic_auth_user": "",

@@ -31,6 +31,12 @@ class ChatBridgeForwarder:
         self._request_lock = asyncio.Lock()
         self._pending_count = 0  # 等待中的请求数
 
+        # 重试配置
+        retry_cfg = settings.get("retry", {})
+        self._max_retries = retry_cfg.get("max_retries", 3)
+        self._retry_delay = retry_cfg.get("retry_delay", 5)
+        self._timeout = retry_cfg.get("timeout", 120)
+
     def log(self, message: str, level: str = "info"):
         """记录日志并推送到管理UI"""
         log_msg = f"[Forwarder] {message}"
@@ -182,75 +188,103 @@ class ChatBridgeForwarder:
         request_id: str,
         is_stream: bool,
     ) -> web.Response:
-        """实际处理单个请求（已持有锁）"""
+        """实际处理单个请求（已持有锁），失败时自动重试"""
         ws_message = {
             "type": "user_request",
             "id": request_id,
             "content": request_data,
         }
 
-        if is_stream:
-            stream_response = web.StreamResponse(
-                status=200,
-                headers={
-                    "Content-Type": "text/event-stream",
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
-            )
-            await stream_response.prepare(request)
-
-            queue: asyncio.Queue = asyncio.Queue()
-            self.response_queues[request_id] = queue
+        last_error = ""
+        for attempt in range(1, self._max_retries + 1):
+            if attempt > 1:
+                self.log(
+                    f"第 {attempt}/{self._max_retries} 次重试 ID={request_id[:8]}，等待 {self._retry_delay}s..."
+                )
+                await asyncio.sleep(self._retry_delay)
 
             try:
-                if not await self._send_to_st(ws_message):
-                    await stream_response.write(b"data: [DONE]\n\n")
-                    return stream_response
+                if is_stream:
+                    result = await self._process_stream(request, ws_message, request_id)
+                else:
+                    result = await self._process_nonstream(ws_message, request_id)
+                return result
+            except asyncio.TimeoutError:
+                last_error = f"超时（{self._timeout}s）"
+                self.log(f"请求超时 ID={request_id[:8]}，attempt={attempt}", "warning")
+            except Exception as e:
+                last_error = str(e)
+                self.log(
+                    f"请求失败 ID={request_id[:8]}，attempt={attempt}: {e}", "warning"
+                )
 
-                while True:
-                    try:
-                        chunk = await asyncio.wait_for(queue.get(), timeout=120.0)
-                        if not chunk or not isinstance(chunk, str):
-                            continue
-                        chunk = chunk.strip()
-                        if not chunk:
-                            continue
-                        if chunk == "[DONE]":
-                            await stream_response.write(b"data: [DONE]\n\n")
-                            break
-                        if not chunk.startswith("data: "):
-                            chunk = f"data: {chunk}"
-                        if not chunk.endswith("\n\n"):
-                            chunk = f"{chunk}\n\n"
-                        await stream_response.write(chunk.encode())
-                    except asyncio.TimeoutError:
-                        self.log(f"等待响应超时: ID={request_id[:8]}", "warning")
-                        await stream_response.write(b"data: [DONE]\n\n")
-                        break
+        self.log(
+            f"请求已达最大重试次数 ID={request_id[:8]}，最后错误: {last_error}", "error"
+        )
+        return web.Response(
+            status=504, text=f"请求失败（已重试{self._max_retries}次）: {last_error}"
+        )
 
+    async def _process_stream(
+        self, request: web.Request, ws_message: dict, request_id: str
+    ) -> web.Response:
+        """处理流式请求"""
+        stream_response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+        await stream_response.prepare(request)
+
+        queue: asyncio.Queue = asyncio.Queue()
+        self.response_queues[request_id] = queue
+
+        try:
+            if not await self._send_to_st(ws_message):
+                await stream_response.write(b"data: [DONE]\n\n")
                 return stream_response
 
-            finally:
-                self.response_queues.pop(request_id, None)
-                self.log(f"请求完成 ID={request_id[:8]}")
+            while True:
+                chunk = await asyncio.wait_for(queue.get(), timeout=self._timeout)
+                if not chunk or not isinstance(chunk, str):
+                    continue
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                if chunk == "[DONE]":
+                    await stream_response.write(b"data: [DONE]\n\n")
+                    break
+                if not chunk.startswith("data: "):
+                    chunk = f"data: {chunk}"
+                if not chunk.endswith("\n\n"):
+                    chunk = f"{chunk}\n\n"
+                await stream_response.write(chunk.encode())
 
-        else:
-            future: asyncio.Future = asyncio.Future()
-            self.response_futures[request_id] = future
+            self.log(f"流式请求完成 ID={request_id[:8]}")
+            return stream_response
 
-            try:
-                if not await self._send_to_st(ws_message):
-                    return web.Response(status=503, text="发送到SillyTavern失败")
+        finally:
+            self.response_queues.pop(request_id, None)
 
-                response = await asyncio.wait_for(future, timeout=120.0)
-                self.log(f"请求完成 ID={request_id[:8]}")
-                return web.json_response(response)
-            except asyncio.TimeoutError:
-                self.log(f"等待响应超时: ID={request_id[:8]}", "warning")
-                return web.Response(status=504, text="Request timeout")
-            finally:
-                self.response_futures.pop(request_id, None)
+    async def _process_nonstream(
+        self, ws_message: dict, request_id: str
+    ) -> web.Response:
+        """处理非流式请求"""
+        future: asyncio.Future = asyncio.Future()
+        self.response_futures[request_id] = future
+
+        try:
+            if not await self._send_to_st(ws_message):
+                return web.Response(status=503, text="发送到SillyTavern失败")
+
+            response = await asyncio.wait_for(future, timeout=self._timeout)
+            self.log(f"非流式请求完成 ID={request_id[:8]}")
+            return web.json_response(response)
+        finally:
+            self.response_futures.pop(request_id, None)
 
     async def _send_to_st(self, ws_message: dict) -> bool:
         """发送消息到SillyTavern，返回是否成功"""
@@ -272,4 +306,7 @@ class ChatBridgeForwarder:
             "active_queues": len(self.response_queues),
             "pending_requests": self._pending_count,
             "is_processing": self._request_lock.locked(),
+            "max_retries": self._max_retries,
+            "retry_delay": self._retry_delay,
+            "timeout": self._timeout,
         }

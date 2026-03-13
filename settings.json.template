@@ -4,21 +4,10 @@
         "port": 8001,
         "token": ""
     },
-    "llm_api": {
-        "base_url": "https://api.openai.com/v1",
-        "api_keys": [
-            "sk-your-key-here"
-        ]
-    },
-    "st_api": {
-        "host": "0.0.0.0",
-        "port": 8002,
-        "api_key": "st-internal-key"
-    },
     "user_api": {
         "host": "0.0.0.0",
         "port": 8003,
-        "api_key": "user-api-key"
+        "api_key": ""
     },
     "browser": {
         "st_url": "http://sillytavern-conel.zeabur.internal:8000",
@@ -31,6 +20,6 @@
     "admin_ui": {
         "host": "0.0.0.0",
         "port": 8080,
-        "password": "changeme"
+        "password": ""
     }
 }

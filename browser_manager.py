@@ -369,14 +369,13 @@ class BrowserManager:
                 # 截图记录当前状态（调试用）
                 await self._update_screenshot()
 
-                # 等待Login按钮出现（在Forgot password?下面动态渲染）
+                # 等待Login按钮出现
                 login_selectors = [
+                    "#loginButton",
+                    'div:has-text("Login")[role="button"]',
                     "#user-profile-submit",
                     "#login-button",
-                    "#submit-login",
                     'button:has-text("Login")',
-                    'button:has-text("登录")',
-                    'button:has-text("Sign in")',
                     'input[type="submit"]',
                     'button[type="submit"]',
                     "form button",
@@ -386,7 +385,7 @@ class BrowserManager:
                 for selector in login_selectors:
                     try:
                         login_button = await self.page.wait_for_selector(
-                            selector, timeout=8000
+                            selector, timeout=3000
                         )
                         if login_button:
                             self.log(f"找到登录按钮: {selector}")

@@ -209,9 +209,16 @@ class BrowserManager:
             current_url = self.page.url
             self.log(f"当前URL: {current_url}")
 
-            # 检查是否在登录页面
-            is_login_page = await self._check_login_page()
+            # 先检查是否已在主界面（cookie有效直接进入的情况）
+            is_main_page = await self._check_main_page()
+            if is_main_page:
+                self.log("已在SillyTavern主界面（cookie有效）")
+                await self._save_cookies()
+                asyncio.create_task(self._monitor_browser())
+                return True
 
+            # 再检查是否在登录页面
+            is_login_page = await self._check_login_page()
             if is_login_page:
                 self.log("检测到登录页面，尝试自动登录...")
                 success = await self._perform_login()
@@ -219,18 +226,12 @@ class BrowserManager:
                     self.log("自动登录失败", "error")
                     return False
 
-            # 检查是否成功进入主界面
+            # 登录后再次检查主界面
             is_main_page = await self._check_main_page()
-
             if is_main_page:
                 self.log("成功进入SillyTavern主界面")
-
-                # 保存cookies
                 await self._save_cookies()
-
-                # 开始定期监控
                 asyncio.create_task(self._monitor_browser())
-
                 return True
             else:
                 self.log("无法确定当前页面状态", "warning")

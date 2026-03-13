@@ -29,13 +29,18 @@ class ChatBridgeForwarder:
 
         # 排队机制：同一时间只允许一个请求在处理
         self._request_lock = asyncio.Lock()
-        self._pending_count = 0  # 等待中的请求数
+        self._pending_count = 0
 
         # 重试配置
         retry_cfg = settings.get("retry", {})
         self._max_retries = retry_cfg.get("max_retries", 3)
         self._retry_delay = retry_cfg.get("retry_delay", 5)
         self._timeout = retry_cfg.get("timeout", 120)
+
+        # HTTP长轮询：等待ST扩展来取任务的队列
+        self._http_poll_queue: asyncio.Queue = asyncio.Queue()
+        # HTTP长轮询：ST扩展回传响应的队列 {request_id: Queue}
+        self._http_response_queues: Dict[str, asyncio.Queue] = {}
 
     def reload_settings(self, new_settings: Dict[str, Any]):
         """热加载配置（不重启服务）"""
@@ -119,11 +124,15 @@ class ChatBridgeForwarder:
             self.log(f"WebSocket客户端已断开，剩余连接数: {len(self.ws_clients)}")
 
     async def start_user_api_server(self) -> web.AppRunner:
-        """启动用户API服务器（NapCat调用此处）"""
+        """启动用户API服务器（NapCat调用此处，ST扩展也连此处）"""
         app = web.Application()
         app.router.add_post("/v1/chat/completions", self.handle_user_api)
         app.router.add_get("/v1/models", self.handle_models_stub)
         app.router.add_get("/models", self.handle_models_stub)
+        # ST扩展 HTTP 长轮询端点
+        app.router.add_get("/st/poll", self.handle_st_poll)
+        app.router.add_post("/st/response", self.handle_st_response)
+        app.router.add_post("/st/connect", self.handle_st_connect)
 
         host = self.settings["user_api"]["host"]
         port = self.settings["user_api"]["port"]
@@ -299,16 +308,75 @@ class ChatBridgeForwarder:
             self.response_futures.pop(request_id, None)
 
     async def _send_to_st(self, ws_message: dict) -> bool:
-        """发送消息到SillyTavern，返回是否成功"""
+        """发送消息到SillyTavern（WebSocket或HTTP长轮询），返回是否成功"""
+        # 优先用WebSocket
         for ws in list(self.ws_clients):
             try:
                 await ws.send(json.dumps(ws_message))
-                self.log(f"已发送请求到SillyTavern: ID={ws_message['id'][:8]}")
+                self.log(f"[WS] 已发送请求到SillyTavern: ID={ws_message['id'][:8]}")
                 return True
             except Exception as e:
                 self.log(f"发送WebSocket消息失败: {e}", "error")
-        self.log("所有WebSocket客户端发送失败", "error")
+
+        # 降级到HTTP长轮询
+        if not self._http_poll_queue.empty() or True:
+            request_id = ws_message["id"]
+            self._http_response_queues[request_id] = asyncio.Queue()
+            await self._http_poll_queue.put(ws_message)
+            self.log(f"[HTTP] 已推送请求到长轮询队列: ID={request_id[:8]}")
+            return True
+
+        self.log("没有可用的SillyTavern连接", "error")
         return False
+
+    async def handle_st_connect(self, request: web.Request) -> web.Response:
+        """ST扩展心跳/注册接口"""
+        token = self.settings["websocket"].get("token", "")
+        if token and request.headers.get("X-Token") != token:
+            return web.Response(status=401, text="Token验证失败")
+        self.log("ST扩展已通过HTTP连接")
+        return web.json_response({"status": "ok"})
+
+    async def handle_st_poll(self, request: web.Request) -> web.Response:
+        """ST扩展长轮询取任务，最多等30秒"""
+        token = self.settings["websocket"].get("token", "")
+        if token and request.headers.get("X-Token") != token:
+            return web.Response(status=401, text="Token验证失败")
+        try:
+            msg = await asyncio.wait_for(self._http_poll_queue.get(), timeout=30)
+            self.log(f"[HTTP] ST扩展取走任务: ID={msg['id'][:8]}")
+            return web.json_response(msg)
+        except asyncio.TimeoutError:
+            return web.Response(status=204)  # 无任务，让扩展重新轮询
+
+    async def handle_st_response(self, request: web.Request) -> web.Response:
+        """ST扩展回传响应"""
+        token = self.settings["websocket"].get("token", "")
+        if token and request.headers.get("X-Token") != token:
+            return web.Response(status=401, text="Token验证失败")
+        try:
+            data = await request.json()
+            request_id = data.get("id")
+            content = data.get("content")
+            msg_type = data.get("type", "st_response")
+
+            # 处理非流式响应
+            if msg_type == "st_response" and request_id in self.response_futures:
+                future = self.response_futures[request_id]
+                if not future.done():
+                    future.set_result(content)
+
+            # 处理流式响应块
+            if msg_type == "st_chunk" and request_id in self.response_queues:
+                await self.response_queues[request_id].put(content)
+
+            # 处理流式结束
+            if msg_type == "st_done" and request_id in self.response_queues:
+                await self.response_queues[request_id].put("[DONE]")
+
+            return web.json_response({"status": "ok"})
+        except Exception as e:
+            return web.Response(status=400, text=str(e))
 
     def get_status(self) -> Dict[str, Any]:
         """获取转发器状态"""

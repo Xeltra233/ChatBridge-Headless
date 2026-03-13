@@ -365,62 +365,53 @@ class BrowserManager:
             if password_input:
                 await password_input.fill(self.st_pass)
                 self.log("已输入密码")
-            else:
-                self.log("未找到密码输入框", "warning")
 
-            # 截图记录当前状态（调试用）
-            await self._update_screenshot()
+                # 截图记录当前状态（调试用）
+                await self._update_screenshot()
 
-            # 第三步：点击登录按钮（尽量覆盖SillyTavern所有可能的选择器）
-            login_selectors = [
-                "#user-profile-submit",
-                "#login-button",
-                "#submit-login",
-                'button:has-text("Login")',
-                'button:has-text("登录")',
-                'button:has-text("Sign in")',
-                'a:has-text("Login")',
-                'input[type="submit"]',
-                'button[type="submit"]',
-                "form button",
-            ]
+                # 等待Login按钮出现（在Forgot password?下面动态渲染）
+                login_selectors = [
+                    "#user-profile-submit",
+                    "#login-button",
+                    "#submit-login",
+                    'button:has-text("Login")',
+                    'button:has-text("登录")',
+                    'button:has-text("Sign in")',
+                    'input[type="submit"]',
+                    'button[type="submit"]',
+                    "form button",
+                ]
 
-            login_button = None
-            for selector in login_selectors:
-                try:
-                    login_button = await self.page.wait_for_selector(
-                        selector, timeout=5000
-                    )
-                    if login_button:
-                        break
-                except:
-                    continue
+                login_button = None
+                for selector in login_selectors:
+                    try:
+                        login_button = await self.page.wait_for_selector(
+                            selector, timeout=8000
+                        )
+                        if login_button:
+                            self.log(f"找到登录按钮: {selector}")
+                            break
+                    except:
+                        continue
 
-            if login_button:
-                await login_button.click()
-                self.log("已点击登录按钮")
+                if login_button:
+                    await login_button.click()
+                    self.log("已点击登录按钮")
+                else:
+                    # 没找到按钮，按回车兜底
+                    await password_input.press("Enter")
+                    self.log("未找到登录按钮，已按回车提交")
 
                 # 等待登录完成
-                await asyncio.sleep(2)
-                await self.page.wait_for_load_state("networkidle")
+                await asyncio.sleep(3)
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=10000)
+                except:
+                    pass
 
                 return True
             else:
-                self.log("未找到登录按钮，打印页面所有按钮帮助调试", "warning")
-                try:
-                    buttons = await self.page.evaluate("""
-                        () => Array.from(document.querySelectorAll('button, input[type=submit], a'))
-                            .map(el => ({
-                                tag: el.tagName,
-                                id: el.id,
-                                type: el.type || '',
-                                text: el.innerText?.trim().substring(0, 50) || '',
-                                class: el.className?.substring(0, 50) || ''
-                            }))
-                    """)
-                    self.log(f"页面可点击元素: {buttons}", "warning")
-                except Exception as e:
-                    self.log(f"获取页面元素失败: {e}", "debug")
+                self.log("未找到密码输入框", "warning")
                 return False
 
         except Exception as e:

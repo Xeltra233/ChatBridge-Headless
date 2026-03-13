@@ -30,7 +30,7 @@
     },
     "admin_ui": {
         "host": "0.0.0.0",
-        "port": 19198,
+        "port": 8080,
         "password": "changeme"
     }
 }

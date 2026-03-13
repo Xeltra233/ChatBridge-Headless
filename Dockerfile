@@ -36,5 +36,8 @@ COPY . .
 # 创建cookies文件（如果不存在）
 RUN touch cookies.json
 
+# 暴露端口
+EXPOSE 8080
+
 # 运行应用
 CMD ["python", "main.py"]

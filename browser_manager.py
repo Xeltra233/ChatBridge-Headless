@@ -3,11 +3,11 @@
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
-import base64
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any
 from pathlib import Path
 
 try:
@@ -99,11 +99,24 @@ class BrowserManager:
             if os.path.exists(self.cookie_file):
                 try:
                     with open(self.cookie_file, "r") as f:
-                        cookies = json.load(f)
-                        context_options["storage_state"] = {"cookies": cookies}
-                    self.log(f"已加载cookies文件: {self.cookie_file}")
+                        content = f.read().strip()
+                        if content:
+                            cookies = json.loads(content)
+                            if cookies:
+                                context_options["storage_state"] = {"cookies": cookies}
+                                self.log(f"已加载cookies文件: {self.cookie_file}")
+                        else:
+                            self.log("cookies文件为空，跳过加载")
                 except Exception as e:
                     self.log(f"加载cookies文件失败: {e}", "warning")
+
+            # 设置HTTP Basic Auth（如果配置了）
+            if self.basic_auth_user and self.basic_auth_pass:
+                context_options["http_credentials"] = {
+                    "username": self.basic_auth_user,
+                    "password": self.basic_auth_pass,
+                }
+                self.log("已配置HTTP Basic Auth")
 
             self.context = await self.browser.new_context(**context_options)
             self.page = await self.context.new_page()
@@ -134,17 +147,22 @@ class BrowserManager:
         try:
             self.log(f"正在连接SillyTavern: {self.st_url}")
 
-            # 监听HTTP基本认证请求
-            self.page.on("request", self._handle_request)
-
-            # 导航到SillyTavern
-            response = await self.page.goto(self.st_url, wait_until="networkidle")
+            # 导航到SillyTavern（Basic Auth已在context中配置，无需手动拦截）
+            response = await self.page.goto(
+                self.st_url, wait_until="domcontentloaded", timeout=30000
+            )
 
             if response and response.status >= 400:
-                self.log(f"SillyTavern返回错误状态: {response.status}", "warning")
+                self.log(
+                    f"SillyTavern返回错误状态: {response.status}，请检查Basic Auth配置",
+                    "warning",
+                )
 
-            # 等待页面加载完成
-            await self.page.wait_for_load_state("networkidle")
+            # 等待页面稳定
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                self.log("等待networkidle超时，继续处理", "debug")
 
             # 检查当前页面状态
             current_url = self.page.url
@@ -182,38 +200,6 @@ class BrowserManager:
             self.log(error_msg, "error")
             self.last_error = error_msg
             return False
-
-    async def _handle_request(self, request):
-        """处理HTTP请求，用于基本认证"""
-        try:
-            # 检查是否需要基本认证
-            if (
-                request.url == self.st_url
-                and self.basic_auth_user
-                and self.basic_auth_pass
-            ):
-                headers = request.headers
-                auth_header = headers.get("authorization")
-
-                # 如果没有认证头，添加基本认证
-                if not auth_header and self.basic_auth_user and self.basic_auth_pass:
-                    auth_str = f"{self.basic_auth_user}:{self.basic_auth_pass}"
-                    auth_b64 = base64.b64encode(auth_str.encode()).decode()
-
-                    new_headers = dict(headers)
-                    new_headers["Authorization"] = f"Basic {auth_b64}"
-
-                    await request.continue_(headers=new_headers)
-                    self.log("已添加基本认证头")
-                    return
-        except Exception as e:
-            self.log(f"处理请求失败: {e}", "debug")
-
-        # 默认继续请求
-        try:
-            await request.continue_()
-        except:
-            pass
 
     async def _check_login_page(self) -> bool:
         """检查当前是否在登录页面"""

@@ -36,6 +36,22 @@ class BrowserManager:
         self.last_error: Optional[str] = None
 
         # 登录凭据
+        self.basic_auth_user = ""
+        self.basic_auth_pass = ""
+        self.st_user = "QQbot"
+        self.st_pass = ""
+        self.st_url = ""
+        self._load_browser_config()
+
+        # cookies.json 统一放到 data/ 目录
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        os.makedirs(data_dir, exist_ok=True)
+        cookie_filename = self.browser_config.get("cookie_file", "cookies.json")
+        self.cookie_file = os.path.join(data_dir, os.path.basename(cookie_filename))
+
+    def _load_browser_config(self):
+        """从settings中读取浏览器配置"""
+        self.browser_config = self.settings["browser"]
         self.basic_auth_user = self.browser_config.get("basic_auth_user", "")
         self.basic_auth_pass = self.browser_config.get("basic_auth_pass", "")
         self.st_user = self.browser_config.get("st_user", "QQbot")
@@ -44,11 +60,31 @@ class BrowserManager:
             "st_url", "http://sillytavern-conel.zeabur.internal:8000"
         )
 
-        # cookies.json 统一放到 data/ 目录
-        data_dir = os.path.join(os.path.dirname(__file__), "data")
-        os.makedirs(data_dir, exist_ok=True)
-        cookie_filename = self.browser_config.get("cookie_file", "cookies.json")
-        self.cookie_file = os.path.join(data_dir, os.path.basename(cookie_filename))
+    async def reload_settings(self, new_settings: Dict[str, Any]):
+        """热加载browser配置，自动重启浏览器"""
+        old_browser_cfg = {
+            "st_url": self.st_url,
+            "basic_auth_user": self.basic_auth_user,
+            "basic_auth_pass": self.basic_auth_pass,
+            "st_user": self.st_user,
+            "st_pass": self.st_pass,
+        }
+        self.settings = new_settings
+        self._load_browser_config()
+
+        new_browser_cfg = {
+            "st_url": self.st_url,
+            "basic_auth_user": self.basic_auth_user,
+            "basic_auth_pass": self.basic_auth_pass,
+            "st_user": self.st_user,
+            "st_pass": self.st_pass,
+        }
+
+        if old_browser_cfg != new_browser_cfg:
+            self.log("browser配置已变更，正在重启浏览器...")
+            asyncio.create_task(self.restart())
+        else:
+            self.log("browser配置未变更，无需重启浏览器")
 
     def log(self, message: str, level: str = "info"):
         """记录日志并推送到管理UI"""

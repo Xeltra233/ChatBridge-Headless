@@ -250,14 +250,23 @@ class AdminServer:
             content = data.get("content", "")
 
             # 验证JSON格式
-            json.loads(content)
+            new_settings = json.loads(content)
 
             with open(settings_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-            return web.json_response(
-                {"success": True, "message": "设置已保存，重启服务后生效"}
-            )
+            # 热加载：立即应用新配置
+            reload_msgs = []
+            if self.forwarder:
+                self.forwarder.reload_settings(new_settings)
+                reload_msgs.append("转发器配置已热加载")
+            if self.browser_manager:
+                await self.browser_manager.reload_settings(new_settings)
+                reload_msgs.append("浏览器配置已检查")
+
+            msg = "设置已保存并热加载。" + "；".join(reload_msgs)
+            msg += "（端口变更需重启服务生效）"
+            return web.json_response({"success": True, "message": msg})
 
         except json.JSONDecodeError as e:
             return web.json_response(

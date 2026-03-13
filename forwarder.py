@@ -37,6 +37,18 @@ class ChatBridgeForwarder:
         self._retry_delay = retry_cfg.get("retry_delay", 5)
         self._timeout = retry_cfg.get("timeout", 120)
 
+    def reload_settings(self, new_settings: Dict[str, Any]):
+        """热加载配置（不重启服务）"""
+        self.settings = new_settings
+
+        # 更新重试配置
+        retry_cfg = new_settings.get("retry", {})
+        self._max_retries = retry_cfg.get("max_retries", 3)
+        self._retry_delay = retry_cfg.get("retry_delay", 5)
+        self._timeout = retry_cfg.get("timeout", 120)
+
+        self.log("配置已热加载：token/api_key/retry 立即生效，端口变更需重启服务")
+
     def log(self, message: str, level: str = "info"):
         """记录日志并推送到管理UI"""
         log_msg = f"[Forwarder] {message}"

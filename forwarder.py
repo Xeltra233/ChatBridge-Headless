@@ -2,7 +2,7 @@
 ChatBridge Forwarder - 处理WebSocket和API转发
 
 架构：
-  NapCat → 用户API(8003) → WebSocket(8001) → SillyTavern扩展 → SillyTavern自己调LLM
+  NapCat → 用户API(8003) → 排队 → WebSocket(8001) → SillyTavern扩展 → SillyTavern自己调LLM
 """
 
 import json
@@ -26,6 +26,10 @@ class ChatBridgeForwarder:
         self.response_futures: Dict[str, asyncio.Future] = {}
         self.response_queues: Dict[str, asyncio.Queue] = {}
         self.log_queue = log_queue or asyncio.Queue()
+
+        # 排队机制：同一时间只允许一个请求在处理
+        self._request_lock = asyncio.Lock()
+        self._pending_count = 0  # 等待中的请求数
 
     def log(self, message: str, level: str = "info"):
         """记录日志并推送到管理UI"""
@@ -131,7 +135,7 @@ class ChatBridgeForwarder:
         )
 
     async def handle_user_api(self, request: web.Request) -> web.Response:
-        """处理来自NapCat的API请求，转发给SillyTavern"""
+        """处理来自NapCat的API请求，排队转发给SillyTavern"""
         # API密钥验证
         expected_key = self.settings["user_api"]["api_key"]
         if (
@@ -140,108 +144,125 @@ class ChatBridgeForwarder:
         ):
             return web.Response(status=401, text="无效的API密钥")
 
+        if not self.ws_clients:
+            self.log("没有WebSocket客户端连接", "warning")
+            return web.Response(
+                status=503, text="SillyTavern未连接，请检查扩展是否已连接"
+            )
+
         try:
             request_data = await request.json()
-            request_id = str(uuid.uuid4())
-            is_stream = request_data.get("stream", False)
-            self.log(f"用户API请求 ID={request_id}, stream={is_stream}")
+        except Exception as e:
+            return web.Response(status=400, text=f"请求格式错误: {str(e)}")
 
-            if not self.ws_clients:
-                self.log("没有WebSocket客户端连接", "warning")
-                return web.Response(
-                    status=503, text="SillyTavern未连接，请检查扩展是否已连接"
+        request_id = str(uuid.uuid4())
+        is_stream = request_data.get("stream", False)
+
+        # 排队等待
+        self._pending_count += 1
+        queue_pos = self._pending_count
+        self.log(f"请求入队 ID={request_id[:8]}，当前队列位置: {queue_pos}")
+
+        try:
+            async with self._request_lock:
+                self._pending_count -= 1
+                self.log(f"请求开始处理 ID={request_id[:8]}，stream={is_stream}")
+                return await self._process_request(
+                    request, request_data, request_id, is_stream
                 )
+        except Exception as e:
+            self._pending_count = max(0, self._pending_count - 1)
+            self.log(f"处理请求失败: {str(e)}", "error")
+            return web.Response(status=500, text=f"Internal Server Error: {str(e)}")
 
-            ws_message = {
-                "type": "user_request",
-                "id": request_id,
-                "content": request_data,
-            }
+    async def _process_request(
+        self,
+        request: web.Request,
+        request_data: dict,
+        request_id: str,
+        is_stream: bool,
+    ) -> web.Response:
+        """实际处理单个请求（已持有锁）"""
+        ws_message = {
+            "type": "user_request",
+            "id": request_id,
+            "content": request_data,
+        }
 
-            if is_stream:
-                # 流式响应
-                stream_response = web.StreamResponse(
-                    status=200,
-                    headers={
-                        "Content-Type": "text/event-stream",
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                    },
-                )
-                await stream_response.prepare(request)
+        if is_stream:
+            stream_response = web.StreamResponse(
+                status=200,
+                headers={
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+            await stream_response.prepare(request)
 
-                queue = asyncio.Queue()
-                self.response_queues[request_id] = queue
+            queue: asyncio.Queue = asyncio.Queue()
+            self.response_queues[request_id] = queue
 
-                try:
-                    sent = False
-                    for ws in self.ws_clients:
-                        try:
-                            await ws.send(json.dumps(ws_message))
-                            self.log(f"已发送请求到SillyTavern: ID={request_id}")
-                            sent = True
-                            break
-                        except Exception as e:
-                            self.log(f"发送WebSocket消息失败: {e}", "error")
-
-                    if not sent:
-                        return web.Response(status=503, text="发送到SillyTavern失败")
-
-                    while True:
-                        try:
-                            chunk = await asyncio.wait_for(queue.get(), timeout=120.0)
-                            if chunk and isinstance(chunk, str):
-                                chunk = chunk.strip()
-                                if not chunk:
-                                    continue
-                                if chunk == "[DONE]":
-                                    await stream_response.write(b"data: [DONE]\n\n")
-                                    break
-                                if not chunk.startswith("data: "):
-                                    chunk = f"data: {chunk}"
-                                if not chunk.endswith("\n\n"):
-                                    chunk = f"{chunk}\n\n"
-                                await stream_response.write(chunk.encode())
-                        except asyncio.TimeoutError:
-                            self.log(f"等待响应超时: ID={request_id}", "warning")
-                            await stream_response.write(b"data: [DONE]\n\n")
-                            break
-
+            try:
+                if not await self._send_to_st(ws_message):
+                    await stream_response.write(b"data: [DONE]\n\n")
                     return stream_response
 
-                finally:
-                    self.response_queues.pop(request_id, None)
-
-            else:
-                # 非流式响应
-                future = asyncio.Future()
-                self.response_futures[request_id] = future
-
-                sent = False
-                for ws in self.ws_clients:
+                while True:
                     try:
-                        await ws.send(json.dumps(ws_message))
-                        self.log(f"已发送请求到SillyTavern: ID={request_id}")
-                        sent = True
+                        chunk = await asyncio.wait_for(queue.get(), timeout=120.0)
+                        if not chunk or not isinstance(chunk, str):
+                            continue
+                        chunk = chunk.strip()
+                        if not chunk:
+                            continue
+                        if chunk == "[DONE]":
+                            await stream_response.write(b"data: [DONE]\n\n")
+                            break
+                        if not chunk.startswith("data: "):
+                            chunk = f"data: {chunk}"
+                        if not chunk.endswith("\n\n"):
+                            chunk = f"{chunk}\n\n"
+                        await stream_response.write(chunk.encode())
+                    except asyncio.TimeoutError:
+                        self.log(f"等待响应超时: ID={request_id[:8]}", "warning")
+                        await stream_response.write(b"data: [DONE]\n\n")
                         break
-                    except Exception as e:
-                        self.log(f"发送WebSocket消息失败: {e}", "error")
 
-                if not sent:
+                return stream_response
+
+            finally:
+                self.response_queues.pop(request_id, None)
+                self.log(f"请求完成 ID={request_id[:8]}")
+
+        else:
+            future: asyncio.Future = asyncio.Future()
+            self.response_futures[request_id] = future
+
+            try:
+                if not await self._send_to_st(ws_message):
                     return web.Response(status=503, text="发送到SillyTavern失败")
 
-                try:
-                    response = await asyncio.wait_for(future, timeout=120.0)
-                    return web.json_response(response)
-                except asyncio.TimeoutError:
-                    self.log(f"等待响应超时: ID={request_id}", "warning")
-                    return web.Response(status=504, text="Request timeout")
-                finally:
-                    self.response_futures.pop(request_id, None)
+                response = await asyncio.wait_for(future, timeout=120.0)
+                self.log(f"请求完成 ID={request_id[:8]}")
+                return web.json_response(response)
+            except asyncio.TimeoutError:
+                self.log(f"等待响应超时: ID={request_id[:8]}", "warning")
+                return web.Response(status=504, text="Request timeout")
+            finally:
+                self.response_futures.pop(request_id, None)
 
-        except Exception as e:
-            self.log(f"处理用户API请求失败: {str(e)}", "error")
-            return web.Response(status=500, text=f"Internal Server Error: {str(e)}")
+    async def _send_to_st(self, ws_message: dict) -> bool:
+        """发送消息到SillyTavern，返回是否成功"""
+        for ws in list(self.ws_clients):
+            try:
+                await ws.send(json.dumps(ws_message))
+                self.log(f"已发送请求到SillyTavern: ID={ws_message['id'][:8]}")
+                return True
+            except Exception as e:
+                self.log(f"发送WebSocket消息失败: {e}", "error")
+        self.log("所有WebSocket客户端发送失败", "error")
+        return False
 
     def get_status(self) -> Dict[str, Any]:
         """获取转发器状态"""
@@ -249,4 +270,6 @@ class ChatBridgeForwarder:
             "websocket_clients": len(self.ws_clients),
             "active_futures": len(self.response_futures),
             "active_queues": len(self.response_queues),
+            "pending_requests": self._pending_count,
+            "is_processing": self._request_lock.locked(),
         }

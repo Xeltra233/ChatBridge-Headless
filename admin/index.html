@@ -254,7 +254,7 @@
                         <div class="stat-item">
                             <div class="stat-label">待处理请求</div>
                             <div class="stat-value" id="stat-futures">0</div>
-                            <div class="stat-sub">Future + Queue</div>
+                            <div class="stat-sub" id="stat-futures-sub">队列空闲</div>
                         </div>
                         <div class="stat-item">
                             <div class="stat-label">最后错误</div>
@@ -364,8 +364,18 @@
                 document.getElementById('stat-browser').style.color = browser.is_running ? '#4caf50' : '#f44336';
                 document.getElementById('stat-browser-url').textContent = browser.st_url || '-';
                 document.getElementById('stat-ws').textContent = wsCount;
-                document.getElementById('stat-futures').textContent =
-                    (forwarder.active_futures || 0) + (forwarder.active_queues || 0);
+
+                const pending = forwarder.pending_requests || 0;
+                const isProcessing = forwarder.is_processing || false;
+                document.getElementById('stat-futures').textContent = pending;
+                const subEl = document.getElementById('stat-futures-sub');
+                if (isProcessing) {
+                    subEl.textContent = '处理中，' + pending + ' 个等待';
+                    subEl.style.color = '#ffb300';
+                } else {
+                    subEl.textContent = '队列空闲';
+                    subEl.style.color = '#555';
+                }
                 const err = browser.last_error;
                 document.getElementById('stat-error').textContent = err ? err.substring(0, 40) + '...' : '无';
 

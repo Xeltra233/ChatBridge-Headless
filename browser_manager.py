@@ -368,12 +368,21 @@ class BrowserManager:
             else:
                 self.log("未找到密码输入框", "warning")
 
-            # 第三步：点击登录按钮
+            # 截图记录当前状态（调试用）
+            await self._update_screenshot()
+
+            # 第三步：点击登录按钮（尽量覆盖SillyTavern所有可能的选择器）
             login_selectors = [
+                "#user-profile-submit",
+                "#login-button",
+                "#submit-login",
                 'button:has-text("Login")',
                 'button:has-text("登录")',
+                'button:has-text("Sign in")',
+                'a:has-text("Login")',
                 'input[type="submit"]',
                 'button[type="submit"]',
+                "form button",
             ]
 
             login_button = None
@@ -397,7 +406,21 @@ class BrowserManager:
 
                 return True
             else:
-                self.log("未找到登录按钮", "warning")
+                self.log("未找到登录按钮，打印页面所有按钮帮助调试", "warning")
+                try:
+                    buttons = await self.page.evaluate("""
+                        () => Array.from(document.querySelectorAll('button, input[type=submit], a'))
+                            .map(el => ({
+                                tag: el.tagName,
+                                id: el.id,
+                                type: el.type || '',
+                                text: el.innerText?.trim().substring(0, 50) || '',
+                                class: el.className?.substring(0, 50) || ''
+                            }))
+                    """)
+                    self.log(f"页面可点击元素: {buttons}", "warning")
+                except Exception as e:
+                    self.log(f"获取页面元素失败: {e}", "debug")
                 return False
 
         except Exception as e:

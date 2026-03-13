@@ -1,0 +1,4 @@
+aiohttp==3.10.0
+websockets==13.1
+playwright==1.45.0
+asyncio==3.4.3

@@ -1,0 +1,11 @@
+settings.json
+cookies.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+.DS_Store
+*.log
+logs/
+playwright-browsers/

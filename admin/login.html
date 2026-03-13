@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatBridge - 登录</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0f0f0f;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        .login-box {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 40px;
+            width: 360px;
+        }
+        h1 {
+            font-size: 22px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #fff;
+        }
+        .subtitle {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 32px;
+        }
+        label {
+            display: block;
+            font-size: 13px;
+            color: #aaa;
+            margin-bottom: 8px;
+        }
+        input[type="password"] {
+            width: 100%;
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 12px 14px;
+            color: #e0e0e0;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input[type="password"]:focus {
+            border-color: #4a9eff;
+        }
+        button {
+            width: 100%;
+            margin-top: 20px;
+            background: #4a9eff;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background: #3a8eef; }
+        button:disabled { background: #333; color: #666; cursor: not-allowed; }
+        .error {
+            margin-top: 14px;
+            padding: 10px 14px;
+            background: #2a1a1a;
+            border: 1px solid #5a2a2a;
+            border-radius: 8px;
+            color: #ff6b6b;
+            font-size: 13px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h1>ChatBridge</h1>
+        <p class="subtitle">管理控制台</p>
+        <label>管理密码</label>
+        <input type="password" id="password" placeholder="输入密码" autofocus />
+        <button id="loginBtn" onclick="login()">登录</button>
+        <div class="error" id="error"></div>
+    </div>
+    <script>
+        document.getElementById('password').addEventListener('keydown', e => {
+            if (e.key === 'Enter') login();
+        });
+
+        async function login() {
+            const password = document.getElementById('password').value;
+            const btn = document.getElementById('loginBtn');
+            const error = document.getElementById('error');
+
+            if (!password) return;
+
+            btn.disabled = true;
+            btn.textContent = '登录中...';
+            error.style.display = 'none';
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    window.location.href = '/';
+                } else {
+                    error.textContent = data.message || '登录失败';
+                    error.style.display = 'block';
+                    btn.disabled = false;
+                    btn.textContent = '登录';
+                }
+            } catch (e) {
+                error.textContent = '网络错误';
+                error.style.display = 'block';
+                btn.disabled = false;
+                btn.textContent = '登录';
+            }
+        }
+    </script>
+</body>
+</html>

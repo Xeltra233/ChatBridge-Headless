@@ -179,11 +179,30 @@ class BrowserManager:
             self.is_running = False
             raise
 
+    def _has_valid_cookies(self) -> bool:
+        """检查是否存在有效的 cookie 文件"""
+        if not os.path.exists(self.cookie_file):
+            return False
+        try:
+            with open(self.cookie_file, "r") as f:
+                content = f.read().strip()
+                if not content:
+                    return False
+                cookies = json.loads(content)
+                return bool(cookies)
+        except Exception:
+            return False
+
     async def connect_to_sillytavern(self):
         """连接并登录SillyTavern"""
         if not self.is_running or not self.page:
             self.log("浏览器未运行", "error")
             return False
+
+        # 是否有可用 cookie（决定是否跳过密码输入）
+        use_cookie = self._has_valid_cookies()
+        if use_cookie:
+            self.log("检测到 cookie 文件，将跳过密码登录")
 
         try:
             self.log(f"正在连接SillyTavern: {self.st_url}")
@@ -220,8 +239,16 @@ class BrowserManager:
             # 再检查是否在登录页面
             is_login_page = await self._check_login_page()
             if is_login_page:
-                self.log("检测到登录页面，尝试自动登录...")
-                success = await self._perform_login()
+                if use_cookie:
+                    # 有 cookie 但仍出现登录页：只做用户选择，不输密码
+                    self.log(
+                        "检测到登录页面，使用 cookie 模式（仅选择用户，跳过密码）..."
+                    )
+                    success = await self._perform_login(skip_password=True)
+                else:
+                    self.log("检测到登录页面，尝试完整登录（用户名+密码）...")
+                    success = await self._perform_login(skip_password=False)
+
                 if not success:
                     self.log("自动登录失败", "error")
                     return False
@@ -304,8 +331,11 @@ class BrowserManager:
             self.log(f"检查主页面失败: {e}", "debug")
             return False
 
-    async def _perform_login(self) -> bool:
-        """执行SillyTavern登录"""
+    async def _perform_login(self, skip_password: bool = False) -> bool:
+        """执行SillyTavern登录
+
+        skip_password: True 时只选择用户，不输入密码（cookie 登录模式）
+        """
         try:
             # 第一步：选择用户QQbot
             user_selectors = [
@@ -343,6 +373,16 @@ class BrowserManager:
 
             # 等待密码输入框出现
             await asyncio.sleep(1)
+
+            # cookie 模式：跳过密码输入，等待页面自动进入主界面
+            if skip_password:
+                self.log("cookie 模式：跳过密码输入，等待页面跳转...")
+                await asyncio.sleep(3)
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=10000)
+                except:
+                    pass
+                return True
 
             # 第二步：输入密码
             password_selectors = [
@@ -465,7 +505,7 @@ class BrowserManager:
                 # 检查是否被踢出登录
                 if await self._check_login_page():
                     self.log("检测到登录页面，尝试重新登录", "warning")
-                    await self._perform_login()
+                    await self._perform_login(skip_password=self._has_valid_cookies())
 
                 await asyncio.sleep(5)  # 5秒检查一次
 
